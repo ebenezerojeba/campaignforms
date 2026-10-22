@@ -140,7 +140,6 @@
 
 import React, { useRef, useState, useEffect } from 'react';
 import { Camera, X, Loader2, AlertCircle } from 'lucide-react';
-import * as faceapi from 'face-api.js';
 import { compressImage } from '../utils/cloudinaryUpload';
 
 const MAX_RAW_BYTES = 15 * 1024 * 1024;
@@ -156,12 +155,30 @@ const MAX_CENTER_OFFSET_RATIO = 0.2;
 
 const MODEL_URL = '/models';
 
+// face-api.js is large (~700 KB), so it's loaded on demand instead of with
+// the page. Resolves to the library once its face-detector model is ready.
 let modelLoadPromise = null;
 function ensureModelsLoaded() {
   if (!modelLoadPromise) {
-    modelLoadPromise = faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+    modelLoadPromise = import('face-api.js')
+      .then(async (faceapi) => {
+        await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+        return faceapi;
+      })
+      .catch((err) => {
+        modelLoadPromise = null; // let a later attempt retry
+        throw err;
+      });
   }
   return modelLoadPromise;
+}
+
+// Start downloading it in the background once the page is idle, so it's
+// usually ready by the time someone picks a photo.
+export function preloadFaceDetector() {
+  const start = () => ensureModelsLoaded().catch(() => {});
+  if ('requestIdleCallback' in window) window.requestIdleCallback(start, { timeout: 4000 });
+  else setTimeout(start, 2000);
 }
 
 function loadImage(file) {
@@ -189,7 +206,7 @@ async function validatePhoto(file) {
       throw new Error('Use an upright, passport-style photo — not a landscape or heavily cropped square image.');
     }
 
-    await ensureModelsLoaded();
+    const faceapi = await ensureModelsLoaded();
     const detections = await faceapi.detectAllFaces(img, new faceapi.TinyFaceDetectorOptions());
 
     if (detections.length === 0) {

@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { X, Printer, Download, Loader2, Pencil } from 'lucide-react';
-import { generateNominationSlipPdf } from '../utils/generateNominationSlipPdf';
 import apcLogo from '../assets/apc-logo.jpeg';
 
 function slipReference(nominee) {
@@ -53,6 +52,8 @@ export default function NominationSlipModal({ nominee, onClose, onEdit }) {
       } catch {
         // Logo is cosmetic — proceed without it rather than blocking the download.
       }
+      // PDF library is loaded only when needed — it's most of the admin bundle.
+      const { generateNominationSlipPdf } = await import('../utils/generateNominationSlipPdf');
       await generateNominationSlipPdf(nominee, logoDataUrl);
     } catch (err) {
       console.error('Slip PDF generation failed:', err);

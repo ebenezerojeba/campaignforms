@@ -1,11 +1,11 @@
 
 
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useOfflineForm } from '../hooks/useOfflineForm';
 import { useLocations } from '../hooks/useLocations';
 import { Wifi, WifiOff, RefreshCw, AlertCircle } from 'lucide-react';
-import PassportPhotoUpload from './PassportPhotoUpload';
+import PassportPhotoUpload, { preloadFaceDetector } from './PassportPhotoUpload';
 import { uploadPhotoToCloudinary } from '../utils/cloudinaryUpload';
 // Place the uploaded logo file at src/assets/apc-logo.png — Vite will
 // bundle and hash it, unlike a public/ reference, so browser caching
@@ -99,6 +99,8 @@ export default function FormManager() {
     loadingLgas, loadingWards, loadingPUs,
     error: locationError,
   } = useLocations();
+
+  useEffect(() => { preloadFaceDetector(); }, []);
 
   const [formData, setFormData] = useState(EMPTY_FORM);
   const [fieldErrors, setFieldErrors] = useState(EMPTY_FIELD_ERRORS);
