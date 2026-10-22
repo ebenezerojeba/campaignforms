@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+/* Tailwind v4 theme registration. This block must be processed by the
+   Tailwind pipeline — simplest is to paste it directly into index.css
+   right after `@import "tailwindcss";`. If you'd rather keep it as a
+   separate file, `@import` this file into index.css (not just main.jsx)
+   so Tailwind's Vite plugin picks it up: `@import "./tokens.css";`
+   placed after the tailwindcss import. */
+
+@theme {
+  --color-puc-green: #0f5132;
+  --color-puc-green-dark: #0a3d26;
+  --color-puc-paper: #faf7f0;
+  --color-puc-paper-line: #e4dfd1;
+  --color-puc-ink: #1c2320;
+  --color-puc-brass: #a9812c;
+  --color-puc-brass-soft: #f0e6c8;
+  --color-puc-security: #e4ede4;
+  --color-puc-error: #9b3a2e;
+
+  --font-display: "Source Serif 4", Georgia, serif;
+  --font-body: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+/* Plain CSS utility — doesn't need @utility since it's applied as a
+   standalone class with no variants (no hover:/sm: usage on it). */
+.security-weave {
+  background-color: var(--color-puc-paper);
+  background-image: repeating-linear-gradient(
+      135deg,
+      rgba(15, 81, 50, 0.035) 0px,
+      rgba(15, 81, 50, 0.035) 1px,
+      transparent 1px,
+      transparent 8px
+    ),
+    repeating-linear-gradient(
+      45deg,
+      rgba(15, 81, 50, 0.025) 0px,
+      rgba(15, 81, 50, 0.025) 1px,
+      transparent 1px,
+      transparent 8px
+    );
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .nomination-slip-modal,
+  .nomination-slip-modal * {
+    visibility: visible;
+  }
+  .nomination-slip-modal {
+    position: fixed;
+    inset: 0;
+    background: white;
+  }
+}
