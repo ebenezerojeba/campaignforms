@@ -6,7 +6,6 @@ import { useOfflineForm } from '../hooks/useOfflineForm';
 import { useLocations } from '../hooks/useLocations';
 import { Wifi, WifiOff, RefreshCw, AlertCircle } from 'lucide-react';
 import PassportPhotoUpload, { preloadFaceDetector } from './PassportPhotoUpload';
-import { uploadPhotoToCloudinary } from '../utils/cloudinaryUpload';
 // Place the uploaded logo file at src/assets/apc-logo.png — Vite will
 // bundle and hash it, unlike a public/ reference, so browser caching
 // doesn't serve a stale copy if you swap the file later.
@@ -213,32 +212,11 @@ export default function FormManager() {
       return;
     }
 
-    let submissionPayload = { ...formData };
-
-    if (isOnline) {
-      setPhotoUploading(true);
-      try {
-        const { url, publicId } = await uploadPhotoToCloudinary(photoBlob);
-        submissionPayload = { ...submissionPayload, photoUrl: url, photoPublicId: publicId };
-      } catch (err) {
-        setPhotoUploading(false);
-        setUiMessage({ text: err.message || 'Photo upload failed. Please try again.', type: 'error' });
-        return;
-      }
-      setPhotoUploading(false);
-    } else {
-      // TODO(offline queueing): useOfflineForm currently doesn't know
-      // about binary attachments. Attaching the raw Blob here only
-      // works once that hook's persistence layer is IndexedDB (not
-      // localStorage, which can't hold Blobs and has a ~5-10MB cap)
-      // and its sync routine is updated to call
-      // uploadPhotoToCloudinary(photoBlob) for each queued item before
-      // submitting its form data. Wiring this fully requires seeing
-      // that hook's current implementation.
-      submissionPayload = { ...submissionPayload, photoBlob };
-    }
-
-    const result = await submitForm(submissionPayload);
+    // Uploads the photo and sends the form; saves both on the device if the
+    // connection fails, and sends them automatically later.
+    setPhotoUploading(true);
+    const result = await submitForm(formData, photoBlob);
+    setPhotoUploading(false);
 
     if (!result.success) {
       setUiMessage({ text: result.error, type: 'error' });
@@ -270,11 +248,11 @@ export default function FormManager() {
           <div className="flex items-center gap-2">
             {isOnline ? <Wifi className="h-3.5 w-3.5 text-puc-green" /> : <WifiOff className="h-3.5 w-3.5 text-puc-brass" />}
             <span className="font-medium">
-              {isOnline ? 'Connected — submissions are sent immediately' : 'Offline — your entry will be saved on this device'}
+              {isOnline ? 'Connected — submissions are sent immediately' : 'Connection looks offline — entries are saved and sent automatically'}
             </span>
           </div>
           {queueCount > 0 && (
-            <button onClick={triggerManualSync} disabled={syncing || !isOnline} className="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded border border-puc-paper-line font-semibold hover:bg-puc-paper">
+            <button onClick={triggerManualSync} disabled={syncing} className="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded border border-puc-paper-line font-semibold hover:bg-puc-paper">
               <RefreshCw className={`h-3 w-3 ${syncing ? 'animate-spin' : ''}`} /> Send {queueCount} saved {queueCount === 1 ? 'entry' : 'entries'}
             </button>
           )}
@@ -489,7 +467,7 @@ export default function FormManager() {
               disabled={photoUploading}
               className="w-full bg-puc-green hover:bg-puc-green-dark disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-md text-sm tracking-wide shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-puc-green/50 focus:ring-offset-2"
             >
-              {photoUploading ? 'Uploading photo…' : 'Submit Nomination'}
+              {photoUploading ? 'Submitting…' : 'Submit Nomination'}
             </button>
           </form>
         </div>

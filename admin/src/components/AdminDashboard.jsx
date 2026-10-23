@@ -176,8 +176,9 @@ export default function AdminDashboard() {
   const [statsLoading, setStatsLoading] = useState(true);
 
   const fetchRecords = useCallback(
-    async (targetPage = 1, search = searchTerm, lga = lgaFilter, ward = wardFilter, source = sourceFilter) => {
-      setLoading(true);
+    async (targetPage = 1, search = searchTerm, lga = lgaFilter, ward = wardFilter, source = sourceFilter, quiet = false) => {
+      // quiet = background refresh: don't blank the list with "Loading…".
+      if (!quiet) setLoading(true);
       setLoadError("");
       try {
         const params = new URLSearchParams({ page: targetPage, limit: PAGE_SIZE });
@@ -202,8 +203,8 @@ export default function AdminDashboard() {
     [authFetch, searchTerm, lgaFilter, wardFilter, sourceFilter]
   );
 
-  const fetchStats = useCallback(async () => {
-    setStatsLoading(true);
+  const fetchStats = useCallback(async (quiet = false) => {
+    if (!quiet) setStatsLoading(true);
     try {
       const res = await authFetch(API.adminStats);
       if (!res.ok) return;
@@ -226,6 +227,23 @@ export default function AdminDashboard() {
     fetchStats();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Keep the list current without a manual refresh: poll every 15s while
+  // the list is on screen, and refresh as soon as the tab is focused again.
+  useEffect(() => {
+    if (view !== "list") return;
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      fetchRecords(meta.page, searchTerm, lgaFilter, wardFilter, sourceFilter, true);
+      fetchStats(true);
+    };
+    const timer = setInterval(refresh, 15000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [view, meta.page, fetchRecords, fetchStats, searchTerm, lgaFilter, wardFilter, sourceFilter]);
 
   const handleSearchSubmit = (e) => {
     e.preventDefault();
@@ -267,6 +285,7 @@ export default function AdminDashboard() {
     fetchRecords(meta.page);
     fetchStats();
   };
+
 
   const startEdit = (nominee) => {
     setSelectedNominee(null);

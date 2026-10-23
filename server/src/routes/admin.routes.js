@@ -15,6 +15,12 @@ const router = express.Router();
 // requires super_admin (see that route specifically).
 router.use(protect, adminApiLimiter);
 
+// Personal data: never let browsers or the CDN cache it, and always serve fresh results.
+router.use((req, res, next) => {
+  res.set("Cache-Control", "no-store");
+  next();
+});
+
 // --- List / search (staff + super_admin) ----------------------------
 router.get("/submissions", requireRole("staff", "super_admin"), async (req, res) => {
   try {

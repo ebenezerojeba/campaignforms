@@ -1,136 +1,162 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { addOfflineSubmission, getOfflineSubmissions, deleteOfflineSubmission } from '../db/indexedDb';
 import { API } from '../config/api';
+import { uploadPhotoToCloudinary } from '../utils/cloudinaryUpload';
 
-// Status codes where the server has definitively looked at the payload and
-// rejected it (bad data, duplicate NIN/PVC). Retrying it unchanged will
-// never succeed — these must NOT go into the offline queue.
+// The server looked at the data and rejected it (bad field, duplicate
+// NIN/PVC). Retrying unchanged will never work, so these are not queued.
 const isPermanentRejection = (status) => status === 400 || status === 409 || status === 422;
 
-// Turn the server's rejection into a readable message, including which
-// fields failed (the server sends these in `details`).
+// How often to retry saved entries while any are waiting.
+const RETRY_INTERVAL_MS = 20_000;
+
+// Readable rejection message, including which fields failed.
 const describeRejection = (data) => {
-  const base = describeRejection(data);
+  const base = data.error || 'Submission was rejected.';
   if (!Array.isArray(data.details) || data.details.length === 0) return base;
   const reasons = data.details.map((d) => (d.field ? `${d.field}: ${d.message}` : d.message));
   return `${base} ${reasons.join(' ')}`;
 };
 
+class PermanentRejection extends Error {}
+
+/**
+ * Sends one submission: uploads the photo first if it hasn't been uploaded
+ * yet, then posts the form. Throws PermanentRejection if the server refuses
+ * the data; any other throw means "try again later".
+ */
+async function sendSubmission(formData, photoBlob) {
+  let payload = formData;
+
+  if (!payload.photoUrl) {
+    if (!photoBlob) throw new PermanentRejection('Photo is missing. Please fill the form again with a photo.');
+    const { url, publicId } = await uploadPhotoToCloudinary(photoBlob);
+    payload = { ...payload, photoUrl: url, photoPublicId: publicId };
+  }
+
+  const response = await fetch(API.submitNomination, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (response.ok) return payload;
+
+  const data = await response.json().catch(() => ({}));
+  if (isPermanentRejection(response.status)) throw new PermanentRejection(describeRejection(data));
+
+  // 429 (rate limit) or 5xx: server reachable but not accepting right now.
+  const err = new Error(data.error || `Server returned ${response.status}`);
+  err.payload = payload; // keep the uploaded photo URL so it isn't uploaded twice
+  throw err;
+}
+
 export function useOfflineForm() {
+  // Display only — the browser's online flag is unreliable on many phones,
+  // so it never decides whether we try to send.
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [queueCount, setQueueCount] = useState(0);
   const [syncing, setSyncing] = useState(false);
-  // Items that failed sync permanently (rejected by the server, not a
-  // network issue) — surfaced so the UI can tell the person, rather than
-  // vanishing silently into a queue that will never succeed.
   const [syncErrors, setSyncErrors] = useState([]);
+  const syncingRef = useRef(false);
 
   const updateQueueCount = useCallback(async () => {
-    const items = await getOfflineSubmissions();
-    setQueueCount(items.length);
+    try {
+      const items = await getOfflineSubmissions();
+      setQueueCount(items.length);
+      return items.length;
+    } catch {
+      return 0;
+    }
   }, []);
 
   const syncQueueWithServer = useCallback(async () => {
-    if (!navigator.onLine || syncing) return;
-
-    const items = await getOfflineSubmissions();
+    if (syncingRef.current) return;
+    const items = await getOfflineSubmissions().catch(() => []);
     if (items.length === 0) return;
 
+    syncingRef.current = true;
     setSyncing(true);
-    for (const item of items) {
-      try {
-        // Clean off the local auto-increment wrapper key before syncing to MongoDB
-        const { localId, ...cleanData } = item;
-
-        const response = await fetch(API.submitNomination, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(cleanData),
-        });
-
-        if (response.ok) {
+    try {
+      for (const item of items) {
+        const { localId, photoBlob, ...formData } = item;
+        try {
+          await sendSubmission(formData, photoBlob);
           await deleteOfflineSubmission(localId);
-          continue;
+        } catch (err) {
+          if (err instanceof PermanentRejection) {
+            await deleteOfflineSubmission(localId);
+            setSyncErrors((prev) => [...prev, { localId, fullName: formData.fullName, error: err.message }]);
+            continue;
+          }
+          // Network or server problem: keep it (with the photo URL if we got
+          // that far) and stop this round.
+          if (err.payload?.photoUrl && !formData.photoUrl) {
+            await deleteOfflineSubmission(localId);
+            await addOfflineSubmission({ ...err.payload });
+          }
+          console.warn('Sync paused, will retry:', err.message);
+          break;
         }
-
-        if (isPermanentRejection(response.status)) {
-          // Server processed it and rejected it — remove from the queue
-          // (retrying won't help) and record why, so the UI can tell
-          // the person their submission needs correcting.
-          const data = await response.json().catch(() => ({}));
-          await deleteOfflineSubmission(localId);
-          setSyncErrors((prev) => [
-            ...prev,
-            { localId, fullName: cleanData.fullName, error: describeRejection(data) },
-          ]);
-          continue;
-        }
-
-        // Transient server-side issue (5xx, 429 rate limit) — leave it
-        // queued and stop this pass; don't hammer a struggling server.
-        console.warn(`Sync paused: server returned ${response.status}. Will retry later.`);
-        break;
-      } catch (err) {
-        // Genuine network failure (offline mid-loop, DNS failure, etc.)
-        console.error('Remote sync retry cycle suspended: Target host unreachable.', err);
-        break;
       }
+    } finally {
+      await updateQueueCount();
+      syncingRef.current = false;
+      setSyncing(false);
     }
-    await updateQueueCount();
-    setSyncing(false);
-  }, [syncing, updateQueueCount]);
+  }, [updateQueueCount]);
 
+  // Retry saved entries: on load, when the connection comes back, when the
+  // person returns to the tab, and on a timer while anything is waiting.
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
       syncQueueWithServer();
     };
     const handleOffline = () => setIsOnline(false);
+    const handleVisible = () => {
+      if (document.visibilityState === 'visible') syncQueueWithServer();
+    };
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
-    updateQueueCount();
+    document.addEventListener('visibilitychange', handleVisible);
+
+    updateQueueCount().then((count) => count > 0 && syncQueueWithServer());
 
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      document.removeEventListener('visibilitychange', handleVisible);
     };
   }, [syncQueueWithServer, updateQueueCount]);
 
-  const submitForm = async (formData) => {
-    if (navigator.onLine) {
-      try {
-        const response = await fetch(API.submitNomination, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(formData),
-        });
+  useEffect(() => {
+    if (queueCount === 0) return;
+    const timer = setInterval(syncQueueWithServer, RETRY_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [queueCount, syncQueueWithServer]);
 
-        if (response.ok) {
-          return { success: true, status: 'online' };
-        }
-
-        if (isPermanentRejection(response.status)) {
-          // Do NOT queue — this needs the person's attention right now
-          // (duplicate NIN/PVC, invalid field, etc).
-          const data = await response.json().catch(() => ({}));
-          return { success: false, status: 'rejected', error: describeRejection(data) };
-        }
-
-        // Transient (5xx/429) — the server is reachable but struggling;
-        // safe to queue and retry.
-        await addOfflineSubmission(formData);
-        await updateQueueCount();
-        return { success: true, status: 'cached' };
-      } catch (err) {
-        // fetch threw — genuine network failure, not a server response
-        console.warn('Online submission failed due to network flux. Falling back to local storage.');
-        await addOfflineSubmission(formData);
-        await updateQueueCount();
-        return { success: true, status: 'cached' };
+  /**
+   * Always tries to send straight away. Saves on the device only if that
+   * fails for a reason that a retry could fix (no connection, server busy).
+   * Resolves to { success, status: 'online' | 'cached' | 'rejected', error? }.
+   */
+  const submitForm = async (formData, photoBlob) => {
+    try {
+      await sendSubmission(formData, photoBlob);
+      setIsOnline(true);
+      return { success: true, status: 'online' };
+    } catch (err) {
+      if (err instanceof PermanentRejection) {
+        return { success: false, status: 'rejected', error: err.message };
       }
-    } else {
-      await addOfflineSubmission(formData);
+      console.warn('Could not send now, saving on this device:', err.message);
+      try {
+        await addOfflineSubmission({ ...(err.payload || formData), photoBlob });
+      } catch {
+        return { success: false, status: 'rejected', error: 'Could not send or save this entry. Please try again.' };
+      }
       await updateQueueCount();
       return { success: true, status: 'cached' };
     }
