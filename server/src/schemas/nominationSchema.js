@@ -65,6 +65,6 @@ export const nominationSchema = z
 export const loginSchema = z
   .object({
     username: z.string().trim().min(3).max(32),
-    password: z.string().min(8).max(128),
+    password: z.string().min(7).max(128),
   })
   .strict();

@@ -25,8 +25,8 @@ async function main() {
     console.error('Role must be "staff" or "super_admin".');
     process.exit(1);
   }
-  if (password.length < 8) {
-    console.error("Password must be at least 8 characters.");
+  if (password.length < 7) {
+    console.error("Password must be at least 7 characters.");
     process.exit(1);
   }
   if (!process.env.MONGODB_URI) {
