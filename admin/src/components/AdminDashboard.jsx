@@ -1,10 +1,11 @@
-import React, { useEffect, useState, useCallback } from "react";
-import { ShieldCheck, ChevronLeft, ChevronRight, FileSpreadsheet, FileJson, Users, UserPlus, Search, LogOut, MapPin, X, RefreshCw, AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
+import { ShieldCheck, ChevronLeft, ChevronRight, FileSpreadsheet, FileJson, Users, UserPlus, Search, LogOut, MapPin, X, RefreshCw, AlertTriangle, CheckCircle2, Loader2, Bell } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { API } from "../config/api";
 import AdminManualEntryForm from "../components/AdminManualEntryForm";
 import NominationSlipModal from "../components/NominationSlipModal";
 
+const LIVE_POLL_MS = 5000; // how often to check for new submissions
 const PAGE_SIZE = 15; // matches the backend default — was 12 vs 15 before, silently wasting a request's worth of rows
 
 function SourceBadge({ source }) {
@@ -44,17 +45,20 @@ function PhotoThumb({ item, className }) {
 
 // Mobile card — shown below the `md` breakpoint in place of the table row.
 // Same tap-to-open-slip behavior as the desktop row, sized for a thumb, not a cursor.
-function NomineeCard({ item, onSelect }) {
+function NomineeCard({ item, onSelect, isNew = false }) {
   return (
     <button
       type="button"
       onClick={() => onSelect(item)}
-      className="w-full text-left bg-slate-950 border border-slate-800 rounded-xl p-4 flex gap-3 active:bg-slate-900 transition-colors"
+      className={`w-full text-left bg-slate-950 border rounded-xl p-4 flex gap-3 active:bg-slate-900 transition-colors ${isNew ? "border-emerald-500 ring-1 ring-emerald-500/50" : "border-slate-800"}`}
     >
       <PhotoThumb item={item} className="h-16 w-14" />
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex items-start justify-between gap-2">
-          <p className="font-bold text-white text-sm truncate">{item.fullName}</p>
+          <p className="font-bold text-white text-sm truncate">
+            {isNew && <span className="mr-1.5 px-1.5 py-0.5 rounded bg-emerald-600 text-white text-[9px] font-black uppercase align-middle">New</span>}
+            {item.fullName}
+          </p>
           <SourceBadge source={item.source} />
         </div>
         <p className="text-slate-400 text-xs truncate">{item.telNo} {item.email ? `· ${item.email}` : ''}</p>
@@ -165,6 +169,12 @@ export default function AdminDashboard() {
   const [notice, setNotice] = useState(null); // { type: 'success' | 'error', text }
   const [exporting, setExporting] = useState("");
 
+  // Live updates: newest createdAt we've shown, new-arrival count, and which
+  // rows to highlight.
+  const lastSeenRef = useRef(null);
+  const [newArrivals, setNewArrivals] = useState(0);
+  const [highlightSince, setHighlightSince] = useState(null);
+
   // Auto-dismiss notices after a few seconds.
   useEffect(() => {
     if (!notice) return;
@@ -192,6 +202,8 @@ export default function AdminDashboard() {
         const payload = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(payload.error || `Server returned ${res.status}`);
         setSubmissions(payload.data || []);
+        const newest = (payload.data || [])[0]?.createdAt;
+        if (newest && (!lastSeenRef.current || newest > lastSeenRef.current)) lastSeenRef.current = newest;
         setMeta({ total: payload.total ?? 0, page: payload.page ?? 1, pages: payload.pages ?? 1 });
       } catch (err) {
         console.error("Failed to load submissions:", err);
@@ -228,22 +240,54 @@ export default function AdminDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Keep the list current without a manual refresh: poll every 15s while
-  // the list is on screen, and refresh as soon as the tab is focused again.
+  // Live updates: every few seconds ask the server whether anything arrived
+  // since the newest record we've seen. Only when it has do we reload.
   useEffect(() => {
     if (view !== "list") return;
-    const refresh = () => {
+    let stopped = false;
+
+    const check = async () => {
       if (document.visibilityState !== "visible") return;
-      fetchRecords(meta.page, searchTerm, lgaFilter, wardFilter, sourceFilter, true);
-      fetchStats(true);
+      if (!lastSeenRef.current) lastSeenRef.current = new Date(0).toISOString();
+      try {
+        const res = await authFetch(API.adminUpdates(lastSeenRef.current));
+        if (!res.ok || stopped) return;
+        const { newCount, latestAt } = await res.json();
+        if (newCount > 0) {
+          setHighlightSince((prev) => prev || lastSeenRef.current);
+          lastSeenRef.current = latestAt;
+          setNewArrivals((n) => n + newCount);
+          fetchRecords(meta.page, searchTerm, lgaFilter, wardFilter, sourceFilter, true);
+          fetchStats(true);
+        }
+      } catch {
+        // Offline for a moment — the next tick tries again.
+      }
     };
-    const timer = setInterval(refresh, 15000);
-    document.addEventListener("visibilitychange", refresh);
+
+    const timer = setInterval(check, LIVE_POLL_MS);
+    const onVisible = () => document.visibilityState === "visible" && check();
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
+      stopped = true;
       clearInterval(timer);
-      document.removeEventListener("visibilitychange", refresh);
+      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [view, meta.page, fetchRecords, fetchStats, searchTerm, lgaFilter, wardFilter, sourceFilter]);
+  }, [view, meta.page, authFetch, fetchRecords, fetchStats, searchTerm, lgaFilter, wardFilter, sourceFilter]);
+
+  // Show the new-arrival count in the browser tab title.
+  useEffect(() => {
+    const base = "PUC Admin";
+    document.title = newArrivals > 0 ? `(${newArrivals}) New — ${base}` : base;
+    return () => { document.title = base; };
+  }, [newArrivals]);
+
+  const acknowledgeNew = () => {
+    setNewArrivals(0);
+    setHighlightSince(null);
+  };
+
+  const isNew = (item) => Boolean(highlightSince && item.createdAt && item.createdAt > highlightSince);
 
   const handleSearchSubmit = (e) => {
     e.preventDefault();
@@ -282,6 +326,7 @@ export default function AdminDashboard() {
   };
 
   const refreshAll = () => {
+    acknowledgeNew();
     fetchRecords(meta.page);
     fetchStats();
   };
@@ -423,6 +468,22 @@ export default function AdminDashboard() {
           />
         ) : (
           <>
+            {newArrivals > 0 && (
+              <button
+                onClick={() => {
+                  acknowledgeNew();
+                  if (meta.page !== 1) fetchRecords(1);
+                }}
+                className="w-full flex items-center gap-3 p-3 rounded-xl border border-emerald-700 bg-emerald-950/60 text-emerald-300 text-sm font-bold text-left animate-pulse"
+              >
+                <Bell className="h-4 w-4 shrink-0" />
+                <span className="flex-1">
+                  {newArrivals} new submission{newArrivals === 1 ? "" : "s"} just came in{meta.page !== 1 ? " — tap to view" : ""}
+                </span>
+                <span className="text-[11px] uppercase text-emerald-400">Dismiss</span>
+              </button>
+            )}
+
             {/* Top-line stats — trimmed to what's actually decision-useful:
                 total volume, geographic spread, and channel mix. */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
@@ -523,7 +584,7 @@ export default function AdminDashboard() {
                 <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center text-slate-500 text-sm">No records found.</div>
               ) : (
                 submissions.map((item) => (
-                  <NomineeCard key={item._id} item={item} onSelect={setSelectedNominee} />
+                  <NomineeCard key={item._id} item={item} onSelect={setSelectedNominee} isNew={isNew(item)} />
                 ))
               )}
             </div>
@@ -555,12 +616,15 @@ export default function AdminDashboard() {
                         <tr
                           key={item._id}
                           onClick={() => setSelectedNominee(item)}
-                          className="hover:bg-slate-950/40 transition-all cursor-pointer"
+                          className={`hover:bg-slate-950/40 transition-all cursor-pointer ${isNew(item) ? "bg-emerald-950/50 border-l-4 border-emerald-500" : ""}`}
                         >
                           <td className="p-4">
                             <PhotoThumb item={item} className="h-12 w-10" />
                           </td>
-                          <td className="p-4 font-bold text-white whitespace-nowrap">{item.fullName}</td>
+                          <td className="p-4 font-bold text-white whitespace-nowrap">
+                            {isNew(item) && <span className="mr-2 px-1.5 py-0.5 rounded bg-emerald-600 text-white text-[9px] font-black uppercase align-middle">New</span>}
+                            {item.fullName}
+                          </td>
                           <td className="p-4 space-y-0.5">
                             <p className="font-semibold text-slate-200">{item.telNo}</p>
                             <p className="text-slate-500 text-[11px]">{item.email || "No email"}</p>

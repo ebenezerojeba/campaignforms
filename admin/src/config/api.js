@@ -11,6 +11,7 @@ export const API = {
   me: `${API_BASE_URL}/api/auth/me`,
   adminSubmissions: `${API_BASE_URL}/api/admin/submissions`,
   adminStats: `${API_BASE_URL}/api/admin/stats/overview`,
+  adminUpdates: (since) => `${API_BASE_URL}/api/admin/updates?since=${encodeURIComponent(since)}`,
   adminExport: (format) => `${API_BASE_URL}/api/admin/export?format=${format}`,
   lgas: `${API_BASE_URL}/api/locations/lgas`,
   wards: (lga) => `${API_BASE_URL}/api/locations/wards?lga=${encodeURIComponent(lga)}`,

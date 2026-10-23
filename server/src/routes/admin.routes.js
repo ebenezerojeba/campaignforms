@@ -22,6 +22,23 @@ router.use((req, res, next) => {
 });
 
 // --- List / search (staff + super_admin) ----------------------------
+// --- Live updates (staff + super_admin) ----------------------------
+// The admin panel polls this every few seconds. It's deliberately tiny:
+// how many records arrived after `since`, and the newest timestamp.
+router.get("/updates", requireRole("staff", "super_admin"), async (req, res) => {
+  try {
+    const since = new Date(typeof req.query.since === "string" ? req.query.since : NaN);
+    const latest = await FormResponse.findOne({}, { createdAt: 1 }).sort({ createdAt: -1 }).lean();
+    const newCount = Number.isNaN(since.getTime())
+      ? 0
+      : await FormResponse.countDocuments({ createdAt: { $gt: since } });
+    return res.status(200).json({ newCount, latestAt: latest?.createdAt ?? null });
+  } catch (error) {
+    console.error("Updates check failed:", error);
+    return res.status(500).json({ error: "Failed to check for updates." });
+  }
+});
+
 router.get("/submissions", requireRole("staff", "super_admin"), async (req, res) => {
   try {
     const page = Math.max(Number.parseInt(req.query.page, 10) || 1, 1);

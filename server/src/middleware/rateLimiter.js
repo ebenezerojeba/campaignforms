@@ -23,7 +23,7 @@ export const loginLimiter = rateLimit({
 // frontend loop, not meant to be restrictive for normal use.
 export const adminApiLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
-  max: 300,
+  max: 900, // admin panel polls for new submissions every 5s
   standardHeaders: true,
   legacyHeaders: false,
 });
